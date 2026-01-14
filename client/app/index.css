@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-wt-dark text-wt-text;
+  font-family: 'Courier New', Courier, monospace; /* Retro feel */
+}
+
+/* Custom utilities for the Walkie Talkie */
+.mesh-pattern {
+  background-image: radial-gradient(#2d2d2d 1px, transparent 1px);
+  background-size: 4px 4px;
+}

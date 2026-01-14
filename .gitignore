@@ -1,0 +1,30 @@
+# Dependencies
+**/node_modules/
+
+# Production
+**/dist/
+**/.output/
+**/.vercel/
+
+# Logs
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Environment
+**/.env
+**/.env.*
+!**/.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
