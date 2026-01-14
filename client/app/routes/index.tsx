@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { io, Socket } from 'socket.io-client'
 import { Mic, Volume2, Radio, Activity } from 'lucide-react'
 
@@ -9,6 +9,7 @@ export const Route = createFileRoute('/')({
 
 type RoomState = {
   currentSpeaker: string | null
+  sampleRate?: number // NEW: Store sample rate
 }
 
 type AppStatus = 'IDLE' | 'TRANSMITTING' | 'RECEIVING' | 'BUSY'
@@ -28,6 +29,9 @@ function WalkieTalkie() {
   const streamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  
+  // NEW: Ref to store the incoming speaker's rate
+  const speakerSampleRateRef = useRef<number>(44100) 
 
   // --- LOGGING ---
   const addLog = (msg: string) => {
@@ -42,7 +46,6 @@ function WalkieTalkie() {
     audioContextRef.current = ctx
 
     // 2. Initialize Socket
-    // Use environment variable if available (Production), otherwise guess local network (Dev)
     const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:3001`
     
     socketRef.current = io(serverUrl)
@@ -68,6 +71,7 @@ function WalkieTalkie() {
         } else {
             setStatus('BUSY')
             setCurrentSpeaker(state.currentSpeaker)
+            if (state.sampleRate) speakerSampleRateRef.current = state.sampleRate
         }
       } else {
         setStatus('IDLE')
@@ -75,13 +79,17 @@ function WalkieTalkie() {
       }
     })
 
-    socket.on('talk-started', ({ userId }: { userId: string }) => {
+    socket.on('talk-started', ({ userId, sampleRate }: { userId: string, sampleRate?: number }) => {
       if (userId === socket.id) {
         setStatus('TRANSMITTING')
         startRecording()
       } else {
         setStatus('RECEIVING')
         setCurrentSpeaker(userId)
+        
+        // NEW: Update sample rate for playback
+        if (sampleRate) speakerSampleRateRef.current = sampleRate
+
         // Ensure playback context is running
         if (audioContextRef.current?.state === 'suspended') {
             audioContextRef.current.resume()
@@ -143,7 +151,6 @@ function WalkieTalkie() {
         sourceRef.current = source
 
         // Create Processor (BufferSize 4096 = ~92ms latency at 44.1k)
-        // We use ScriptProcessor for simplicity in a single file vs AudioWorklet
         const processor = ctx.createScriptProcessor(4096, 1, 1)
         processorRef.current = processor
 
@@ -152,16 +159,14 @@ function WalkieTalkie() {
             
             const inputData = e.inputBuffer.getChannelData(0)
             
-            // Convert Float32Array to something sendable (we send raw floats here for quality/ease)
-            // Ideally we'd compress this (Opus) but for local LAN raw is fine.
             socketRef.current.emit('voice-chunk', { 
                 roomId, 
-                chunk: inputData.buffer // ArrayBuffer
+                chunk: inputData.buffer 
             })
         }
 
         source.connect(processor)
-        processor.connect(ctx.destination) // Necessary for the processor to run
+        processor.connect(ctx.destination) 
 
     } catch (err) {
         console.error('Mic Error', err)
@@ -191,18 +196,24 @@ function WalkieTalkie() {
 
     const float32Data = new Float32Array(arrayBuffer)
     
-    const audioBuffer = ctx.createBuffer(1, float32Data.length, ctx.sampleRate)
+    // NEW: Use the SENDER'S sample rate, not the receiver's context rate
+    // This fixes the pitch/speed mismatch
+    const playbackRate = speakerSampleRateRef.current || 44100
+    
+    const audioBuffer = ctx.createBuffer(1, float32Data.length, playbackRate)
     audioBuffer.copyToChannel(float32Data, 0)
 
     const source = ctx.createBufferSource()
     source.buffer = audioBuffer
     source.connect(ctx.destination)
 
-    // Jitter Buffer / Queueing
+    // Jitter Buffer Logic
     const now = ctx.currentTime
-    // If we fell behind, reset to now
-    if (nextStartTimeRef.current < now) {
-        nextStartTimeRef.current = now + 0.05 // 50ms buffer
+    
+    // NEW: Improved drift correction
+    // If we are too far behind (> 0.3s), jump ahead to avoid "lag buildup"
+    if (nextStartTimeRef.current < now || nextStartTimeRef.current > now + 0.3) {
+        nextStartTimeRef.current = now + 0.05 // Reset buffer to 50ms
     }
 
     source.start(nextStartTimeRef.current)
@@ -214,13 +225,13 @@ function WalkieTalkie() {
   const handlePTTDown = async () => {
     if (!socketRef.current || !isConnected) return
     
-    // Ensure AudioContext is running (browser policy)
     if (audioContextRef.current?.state === 'suspended') {
         await audioContextRef.current.resume()
     }
 
-    // Request to talk
-    socketRef.current.emit('start-talk', roomId)
+    // NEW: Send our Sample Rate so others play it correctly
+    const mySampleRate = audioContextRef.current?.sampleRate || 44100
+    socketRef.current.emit('start-talk', { roomId, sampleRate: mySampleRate })
   }
 
   const handlePTTUp = () => {

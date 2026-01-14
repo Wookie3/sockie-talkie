@@ -36,16 +36,17 @@ io.on('connection', (socket) => {
   });
 
   // START TALKING (Request Mutex)
-  socket.on('start-talk', (roomId) => {
+  socket.on('start-talk', ({ roomId, sampleRate }) => {
     if (!rooms[roomId]) return;
 
     // If no one is speaking, grant permission
     if (rooms[roomId].currentSpeaker === null) {
       rooms[roomId].currentSpeaker = socket.id;
+      rooms[roomId].sampleRate = sampleRate; // Store Sample Rate
       
       // Notify EVERYONE in the room (including sender) that X is speaking
-      io.to(roomId).emit('talk-started', { userId: socket.id });
-      console.log(`User ${socket.id} started talking in ${roomId}`);
+      io.to(roomId).emit('talk-started', { userId: socket.id, sampleRate });
+      console.log(`User ${socket.id} started talking in ${roomId} at ${sampleRate}Hz`);
     } else {
       // Reject request
       socket.emit('talk-rejected', { speaker: rooms[roomId].currentSpeaker });
