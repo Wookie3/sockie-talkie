@@ -37,7 +37,7 @@ function WalkieTalkie() {
   const activeRoomRef = useRef<string | null>(null)
   
   // NEW: Ref to store the incoming speaker's rate
-  const speakerSampleRateRef = useRef<number>(44100) 
+  const speakerSampleRateRef = useRef<number>(16000) 
 
   // --- LOGGING ---
   const addLog = (msg: string) => {
@@ -48,7 +48,8 @@ function WalkieTalkie() {
   useEffect(() => {
     // 1. Initialize Audio Context
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
-    const ctx = new AudioContextClass()
+    // Optimize: Use 16kHz for voice to reduce bandwidth/lag
+    const ctx = new AudioContextClass({ sampleRate: 16000 })
     audioContextRef.current = ctx
 
     // Create Master Gain Node (Locked at Max Volume)
@@ -156,25 +157,36 @@ function WalkieTalkie() {
     try {
         await ctx.resume()
         
-        // Get Mic
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        // Get Mic - Request 16kHz to match context
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { 
+                sampleRate: 16000,
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true
+            } 
+        })
         streamRef.current = stream
 
         // Create Source
         const source = ctx.createMediaStreamSource(stream)
         sourceRef.current = source
 
-        // Create Processor (BufferSize 4096 = ~92ms latency at 44.1k)
-        const processor = ctx.createScriptProcessor(4096, 1, 1)
+        // Create Processor (BufferSize 2048 at 16k is ~128ms latency)
+        // 4096 at 16k is ~256ms (too much lag)
+        const processor = ctx.createScriptProcessor(2048, 1, 1)
         processorRef.current = processor
 
         processor.onaudioprocess = (e) => {
             if (!socketRef.current) return
             
+            // Fix: Use ref to get current room ID, avoiding stale closures
+            const currentRoom = activeRoomRef.current || roomId
+            
             const inputData = e.inputBuffer.getChannelData(0)
             
             socketRef.current.emit('voice-chunk', { 
-                roomId, 
+                roomId: currentRoom, 
                 chunk: inputData.buffer 
             })
         }
@@ -212,7 +224,7 @@ function WalkieTalkie() {
     
     // NEW: Use the SENDER'S sample rate, not the receiver's context rate
     // This fixes the pitch/speed mismatch
-    const playbackRate = speakerSampleRateRef.current || 44100
+    const playbackRate = speakerSampleRateRef.current || 16000
     
     const audioBuffer = ctx.createBuffer(1, float32Data.length, playbackRate)
     audioBuffer.copyToChannel(float32Data, 0)
