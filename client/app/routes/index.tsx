@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { io, Socket } from 'socket.io-client'
-import { Mic, Volume2, Radio, Activity } from 'lucide-react'
+import { Mic, Radio, Activity } from 'lucide-react'
 
 export const Route = createFileRoute('/')({
   component: WalkieTalkie,
@@ -22,6 +22,10 @@ function WalkieTalkie() {
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   
+  // NEW: Custom Channel State
+  const [showCustomInput, setShowCustomInput] = useState(false)
+  const [customInput, setCustomInput] = useState('')
+  
   // --- REFS ---
   const socketRef = useRef<Socket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -29,6 +33,7 @@ function WalkieTalkie() {
   const streamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const gainNodeRef = useRef<GainNode | null>(null)
   const activeRoomRef = useRef<string | null>(null)
   
   // NEW: Ref to store the incoming speaker's rate
@@ -45,6 +50,12 @@ function WalkieTalkie() {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
     const ctx = new AudioContextClass()
     audioContextRef.current = ctx
+
+    // Create Master Gain Node (Locked at Max Volume)
+    const gainNode = ctx.createGain()
+    gainNode.gain.value = 1.0
+    gainNode.connect(ctx.destination)
+    gainNodeRef.current = gainNode
 
     // 2. Initialize Socket
     const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:3001`
@@ -208,7 +219,13 @@ function WalkieTalkie() {
 
     const source = ctx.createBufferSource()
     source.buffer = audioBuffer
-    source.connect(ctx.destination)
+    
+    // Connect to Master Gain instead of direct destination
+    if (gainNodeRef.current) {
+        source.connect(gainNodeRef.current)
+    } else {
+        source.connect(ctx.destination)
+    }
 
     // Jitter Buffer Logic
     const now = ctx.currentTime
@@ -313,7 +330,10 @@ function WalkieTalkie() {
                     {['A', 'B', 'C'].map((ch) => (
                         <button
                             key={ch}
-                            onClick={() => setRoomId(`CHANNEL-${ch}`)}
+                            onClick={() => {
+                                setRoomId(`CHANNEL-${ch}`)
+                                setShowCustomInput(false)
+                            }}
                             className={`
                                 flex-1 py-3 rounded-md font-bold text-lg transition-all
                                 ${roomId === `CHANNEL-${ch}` 
@@ -341,14 +361,40 @@ function WalkieTalkie() {
                 </button>
             </div>
 
-             {/* BOTTOM DIALS */}
-             <div className="mt-8 flex justify-between px-4 opacity-50">
-                <Volume2 className="w-6 h-6" />
-                <div className="flex gap-1">
-                    <div className="w-1 h-6 bg-zinc-600"></div>
-                    <div className="w-1 h-6 bg-zinc-600"></div>
-                    <div className="w-1 h-6 bg-zinc-600"></div>
-                </div>
+             {/* CUSTOM CHANNEL */}
+             <div className="mt-8 px-4 h-10">
+                {!showCustomInput ? (
+                    <button 
+                        onClick={() => setShowCustomInput(true)}
+                        className="w-full h-full py-2 bg-zinc-700/50 rounded border border-zinc-600 text-xs font-bold text-zinc-400 hover:text-white hover:bg-zinc-600 hover:border-zinc-500 transition-all uppercase tracking-wider"
+                    >
+                        Custom Channel
+                    </button>
+                ) : (
+                    <div className="flex gap-2 h-full animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <input 
+                            type="text" 
+                            className="flex-1 bg-zinc-900 border border-zinc-500 rounded px-3 text-sm uppercase text-white placeholder-zinc-600 focus:outline-none focus:border-wt-accent focus:ring-1 focus:ring-wt-accent transition-all"
+                            placeholder="ENTER NAME..."
+                            value={customInput}
+                            onChange={(e) => setCustomInput(e.target.value.toUpperCase())}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && customInput.trim()) {
+                                    setRoomId(customInput.trim())
+                                }
+                            }}
+                            autoFocus
+                        />
+                        <button 
+                            onClick={() => {
+                                if (customInput.trim()) setRoomId(customInput.trim())
+                            }}
+                            className="bg-wt-accent px-4 rounded text-zinc-900 font-bold text-xs hover:brightness-110 active:scale-95 transition-all"
+                        >
+                            SET
+                        </button>
+                    </div>
+                )}
              </div>
 
         </div>
