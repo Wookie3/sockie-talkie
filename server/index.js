@@ -35,6 +35,18 @@ io.on('connection', (socket) => {
     socket.emit('room-state', rooms[roomId]);
   });
 
+  // LEAVE ROOM
+  socket.on('leave-room', (roomId) => {
+    socket.leave(roomId);
+    console.log(`User ${socket.id} left room: ${roomId}`);
+    
+    // If this user was the active speaker, release the lock
+    if (rooms[roomId] && rooms[roomId].currentSpeaker === socket.id) {
+        rooms[roomId].currentSpeaker = null;
+        io.to(roomId).emit('talk-stopped', { userId: socket.id });
+    }
+  });
+
   // START TALKING (Request Mutex)
   socket.on('start-talk', ({ roomId, sampleRate }) => {
     if (!rooms[roomId]) return;

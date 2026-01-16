@@ -17,7 +17,7 @@ type AppStatus = 'IDLE' | 'TRANSMITTING' | 'RECEIVING' | 'BUSY'
 function WalkieTalkie() {
   // --- STATE ---
   const [status, setStatus] = useState<AppStatus>('IDLE')
-  const [roomId, setRoomId] = useState('alpha-channel')
+  const [roomId, setRoomId] = useState('CHANNEL-A')
   const [isConnected, setIsConnected] = useState(false)
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null)
   const [logs, setLogs] = useState<string[]>([])
@@ -29,6 +29,7 @@ function WalkieTalkie() {
   const streamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const activeRoomRef = useRef<string | null>(null)
   
   // NEW: Ref to store the incoming speaker's rate
   const speakerSampleRateRef = useRef<number>(44100) 
@@ -55,7 +56,7 @@ function WalkieTalkie() {
     socket.on('connect', () => {
       setIsConnected(true)
       addLog('Connected to freq.')
-      joinRoom(roomId)
+      // joinRoom call removed from here, handled by dependency effect
     })
 
     socket.on('disconnect', () => {
@@ -124,15 +125,17 @@ function WalkieTalkie() {
   // Re-join when room ID changes
   useEffect(() => {
     if (socketRef.current && isConnected) {
-        joinRoom(roomId)
+        const prevRoom = activeRoomRef.current
+        if (prevRoom && prevRoom !== roomId) {
+            socketRef.current.emit('leave-room', prevRoom)
+        }
+        
+        socketRef.current.emit('join-room', roomId)
+        activeRoomRef.current = roomId
+        addLog(`Joined ${roomId}`)
     }
   }, [roomId, isConnected])
 
-
-  const joinRoom = (id: string) => {
-    socketRef.current?.emit('join-room', id)
-    addLog(`Joined ${id}`)
-  }
 
   // --- AUDIO INPUT (Microphone - RAW PCM) ---
   const startRecording = async () => {
@@ -306,14 +309,21 @@ function WalkieTalkie() {
 
             {/* CONTROLS */}
             <div className="flex flex-col gap-4">
-                <div className="flex gap-2">
-                    <input 
-                        type="text" 
-                        value={roomId}
-                        onChange={(e) => setRoomId(e.target.value)}
-                        className="bg-zinc-900 text-wt-text border border-zinc-600 p-2 rounded flex-1 uppercase text-sm focus:outline-none focus:border-wt-accent"
-                        placeholder="ENTER FREQ"
-                    />
+                <div className="flex gap-2 justify-between bg-zinc-900/50 p-2 rounded-lg">
+                    {['A', 'B', 'C'].map((ch) => (
+                        <button
+                            key={ch}
+                            onClick={() => setRoomId(`CHANNEL-${ch}`)}
+                            className={`
+                                flex-1 py-3 rounded-md font-bold text-lg transition-all
+                                ${roomId === `CHANNEL-${ch}` 
+                                    ? 'bg-wt-accent text-zinc-900 shadow-[0_0_15px_rgba(76,175,80,0.4)] transform scale-105' 
+                                    : 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600 hover:text-white'}
+                            `}
+                        >
+                            {ch}
+                        </button>
+                    ))}
                 </div>
 
                 {/* PTT BUTTON */}
