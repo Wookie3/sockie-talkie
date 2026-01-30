@@ -140,27 +140,28 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
     
-    // Cleanup: If this user was the active speaker, release the lock
+    // Cleanup: Only process rooms where the user is actually present
     for (const roomId in rooms) {
-      // Remove user from room
-      if (rooms[roomId] && rooms[roomId].users) {
+      // Check if user is in this room before processing
+      if (rooms[roomId] && rooms[roomId].users && socket.id in rooms[roomId].users) {
+        // Remove user from room
         delete rooms[roomId].users[socket.id];
-      }
-      
-      // Release speaker lock
-      if (rooms[roomId] && rooms[roomId].currentSpeaker === socket.id) {
-        rooms[roomId].currentSpeaker = null;
-        io.to(roomId).emit('talk-stopped', { 
-          userId: socket.id, 
+        
+        // Release speaker lock if this user was the active speaker
+        if (rooms[roomId].currentSpeaker === socket.id) {
+          rooms[roomId].currentSpeaker = null;
+          io.to(roomId).emit('talk-stopped', { 
+            userId: socket.id, 
+            username: users[socket.id] || socket.id
+          });
+        }
+        
+        // Notify room that user left
+        io.to(roomId).emit('user-left', {
+          socketId: socket.id,
           username: users[socket.id] || socket.id
         });
       }
-      
-      // Notify room that user left
-      io.to(roomId).emit('user-left', {
-        socketId: socket.id,
-        username: users[socket.id] || socket.id
-      });
     }
     
     // Remove user from users map

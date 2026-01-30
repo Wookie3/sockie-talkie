@@ -21,8 +21,8 @@ class AudioProcessor extends AudioWorkletProcessor {
         outputData[channel].set(inputData[channel])
       }
       
-      // Send audio data to main thread (create copy of buffer)
-      const float32Array = new Float32Array(inputData[0])
+      // Send audio data to main thread (create copy of full channel buffer)
+      const float32Array = new Float32Array(inputData)
       this.port.postMessage({
         type: 'audioData',
         buffer: float32Array.buffer

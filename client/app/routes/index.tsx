@@ -248,14 +248,6 @@ function WalkieTalkie() {
     }
   }, [isConnected])
 
-  // Handle initial room join on first render
-  useEffect(() => {
-    if (isConnected && !activeRoomRef.current && roomId) {
-      joinRoom(roomId)
-    }
-  }, [])
-
-
   // --- AUDIO INPUT (Microphone - RAW PCM) ---
   const startRecording = async () => {
     if (!audioContextRef.current) return
