@@ -37,7 +37,8 @@ function WalkieTalkie() {
   const activeRoomRef = useRef<string | null>(null)
   
   // NEW: Ref to store the incoming speaker's rate
-  const speakerSampleRateRef = useRef<number>(16000) 
+  const speakerSampleRateRef = useRef<number>(16000)
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([])
 
   // --- LOGGING ---
   const addLog = (msg: string) => {
@@ -58,23 +59,37 @@ function WalkieTalkie() {
     gainNode.connect(ctx.destination)
     gainNodeRef.current = gainNode
 
-    // 2. Initialize Socket
+    // 2. Initialize Socket with reconnection options
     const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:3001`
     
-    socketRef.current = io(serverUrl)
+    socketRef.current = io(serverUrl, {
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000
+    })
 
     const socket = socketRef.current
 
     socket.on('connect', () => {
       setIsConnected(true)
       addLog('Connected to freq.')
-      // joinRoom call removed from here, handled by dependency effect
+      // Auto-rejoin current room if we have one
+      if (activeRoomRef.current) {
+        socket.emit('join-room', activeRoomRef.current)
+        addLog(`Rejoined ${activeRoomRef.current}`)
+      }
     })
 
     socket.on('disconnect', () => {
       setIsConnected(false)
       addLog('Signal lost.')
       setStatus('IDLE')
+    })
+
+    socket.io.on('reconnect_attempt', () => {
+      addLog('Reconnecting...')
     })
 
     socket.on('room-state', (state: RoomState) => {
@@ -131,22 +146,47 @@ function WalkieTalkie() {
     return () => {
       socket.disconnect()
       stopRecording()
+      // Clean up all active audio sources
+      activeSourcesRef.current.forEach(source => {
+        try {
+          source.stop()
+          source.disconnect()
+        } catch (e) {}
+      })
+      activeSourcesRef.current = []
+      // Close audio context
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+      }
     }
-  }, []) // Run once
+  }, [])
 
-  // Re-join when room ID changes
-  useEffect(() => {
-    if (socketRef.current && isConnected) {
-        const prevRoom = activeRoomRef.current
-        if (prevRoom && prevRoom !== roomId) {
-            socketRef.current.emit('leave-room', prevRoom)
-        }
-        
-        socketRef.current.emit('join-room', roomId)
-        activeRoomRef.current = roomId
-        addLog(`Joined ${roomId}`)
+  const joinRoom = (newRoomId: string) => {
+    if (!socketRef.current || !isConnected) return
+    
+    const prevRoom = activeRoomRef.current
+    if (prevRoom && prevRoom !== newRoomId) {
+      socketRef.current.emit('leave-room', prevRoom)
     }
-  }, [roomId, isConnected])
+    
+    socketRef.current.emit('join-room', newRoomId)
+    activeRoomRef.current = newRoomId
+    addLog(`Joined ${newRoomId}`)
+  }
+
+  // Handle room changes explicitly when socket is connected
+  useEffect(() => {
+    if (isConnected && roomId) {
+      joinRoom(roomId)
+    }
+  }, [isConnected])
+
+  // Handle initial room join on first render
+  useEffect(() => {
+    if (isConnected && !activeRoomRef.current && roomId) {
+      joinRoom(roomId)
+    }
+  }, [])
 
 
   // --- AUDIO INPUT (Microphone - RAW PCM) ---
@@ -222,8 +262,6 @@ function WalkieTalkie() {
 
     const float32Data = new Float32Array(arrayBuffer)
     
-    // NEW: Use the SENDER'S sample rate, not the receiver's context rate
-    // This fixes the pitch/speed mismatch
     const playbackRate = speakerSampleRateRef.current || 16000
     
     const audioBuffer = ctx.createBuffer(1, float32Data.length, playbackRate)
@@ -239,10 +277,22 @@ function WalkieTalkie() {
         source.connect(ctx.destination)
     }
 
+    // Track this source for cleanup
+    activeSourcesRef.current.push(source)
+
+    // Remove from tracking after playback completes
+    source.onended = () => {
+      const index = activeSourcesRef.current.indexOf(source)
+      if (index > -1) {
+        activeSourcesRef.current.splice(index, 1)
+      }
+      source.disconnect()
+    }
+
     // Jitter Buffer Logic
     const now = ctx.currentTime
     
-    // NEW: Improved drift correction
+    // Improved drift correction
     // If we are too far behind (> 0.3s), jump ahead to avoid "lag buildup"
     if (nextStartTimeRef.current < now || nextStartTimeRef.current > now + 0.3) {
         nextStartTimeRef.current = now + 0.05 // Reset buffer to 50ms
@@ -343,8 +393,12 @@ function WalkieTalkie() {
                         <button
                             key={ch}
                             onClick={() => {
-                                setRoomId(`CHANNEL-${ch}`)
+                                const newRoom = `CHANNEL-${ch}`
+                                setRoomId(newRoom)
                                 setShowCustomInput(false)
+                                if (isConnected) {
+                                    joinRoom(newRoom)
+                                }
                             }}
                             className={`
                                 flex-1 py-3 rounded-md font-bold text-lg transition-all
@@ -393,18 +447,26 @@ function WalkieTalkie() {
                             onKeyDown={(e) => {
                                 if (e.key === 'Enter' && customInput.trim()) {
                                     setRoomId(customInput.trim())
+                                    if (isConnected) {
+                                        joinRoom(customInput.trim())
+                                    }
                                 }
                             }}
                             autoFocus
                         />
-                        <button 
-                            onClick={() => {
-                                if (customInput.trim()) setRoomId(customInput.trim())
-                            }}
-                            className="bg-wt-accent px-4 rounded text-zinc-900 font-bold text-xs hover:brightness-110 active:scale-95 transition-all"
-                        >
-                            SET
-                        </button>
+                         <button 
+                             onClick={() => {
+                                 if (customInput.trim()) {
+                                     setRoomId(customInput.trim())
+                                     if (isConnected) {
+                                         joinRoom(customInput.trim())
+                                     }
+                                 }
+                             }}
+                             className="bg-wt-accent px-4 rounded text-zinc-900 font-bold text-xs hover:brightness-110 active:scale-95 transition-all"
+                         >
+                             SET
+                         </button>
                     </div>
                 )}
              </div>
