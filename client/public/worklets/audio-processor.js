@@ -16,18 +16,17 @@ class AudioProcessor extends AudioWorkletProcessor {
       const inputData = input[0]
       const outputData = output[0]
       
-      // Copy input to output
+      // Copy input to output (don't transfer buffer)
       for (let channel = 0; channel < input.length; channel++) {
-        for (let i = 0; i < inputData[channel].length; i++) {
-          outputData[channel][i] = inputData[channel][i]
-        }
+        outputData[channel].set(inputData[channel])
       }
       
-      // Send audio data to main thread
+      // Send audio data to main thread (create copy of buffer)
+      const float32Array = new Float32Array(inputData[0])
       this.port.postMessage({
         type: 'audioData',
-        buffer: inputData[0].buffer
-      }, [inputData[0].buffer])
+        buffer: float32Array.buffer
+      }, [float32Array.buffer])
     }
     
     return true
