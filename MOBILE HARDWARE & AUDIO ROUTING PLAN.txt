@@ -1,0 +1,38 @@
+================================================================
+MOBILE HARDWARE & AUDIO ROUTING PLAN
+================================================================
+
+1. HARDWARE COMPATIBILITY
+-------------------------
+- Built-in Mic/Speaker: Supported (Requires Echo Cancellation).
+- Wired Headphones: Supported (Best latency).
+- Bluetooth/Wireless: Supported (Standard A2DP/HFP profiles).
+
+2. BROWSER PERMISSIONS
+----------------------
+- Must request 'microphone' permissions on first interaction.
+- Note: iOS Safari requires a "User Gesture" (like clicking a 
+  button) before it will play any incoming audio. Your 
+  "Join Room" button satisfies this requirement.
+
+3. AUDIO ROUTING LOGIC
+----------------------
+- Category: 'play-and-record' (This ensures the OS treats the 
+  app like a phone call, lowering the volume of other apps).
+- Output: Automatically defaults to the system's active 
+  audio device (Headphones > Speaker).
+
+4. ADVANCED FEATURE: HEADSET CONTROL
+------------------------------------
+- Use 'navigator.mediaSession' to map headphone buttons 
+  (Play/Pause) to the Push-to-Talk 'Talk' trigger. 
+- Allows for "Pocket Mode" operation.
+
+5. USER EXPERIENCE (UX)
+-----------------------
+- Visual Feedback: Always show a "Mic Active" icon on screen 
+  so the user knows their headset is transmitting.
+- Beep Tones: Add a "Roger Beep" (short 50ms sine wave) when 
+  the button is released, so headphone users know the 
+  transmission ended.
+================================================================

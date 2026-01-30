@@ -1,0 +1,49 @@
+================================================================
+PROJECT: ROLE-BASED P2P WALKIE-TALKIE (WEBRTC)
+================================================================
+
+1. CORE OBJECTIVE
+-----------------
+A secure, low-latency PTT app allowing for:
+- "All-Call" (Broadcast to the entire group)
+- "Role-Call" (Targeted to specific roles, e.g., Managers)
+- "Direct-Call" (Private 1-on-1 audio)
+
+2. DATA MODEL (SUPABASE/DATABASE)
+---------------------------------
+Users need a "Role" and "Status" field:
+- UserID: Unique ID (used for PeerJS)
+- Name: "John Doe"
+- Role: "Manager", "Shipper", "Cashier", or "Staff"
+- CurrentRoom: "Warehouse", "Sales Floor"
+
+3. ROUTING LOGIC (THE "WHO HEARS WHAT" FILTER)
+----------------------------------------------
+A. DIRECT CALL:
+   - User selects a specific name.
+   - App enables the audio stream ONLY for the connection 
+     linked to that User's PeerID.
+
+B. ROLE-BASED CALL (Selective Mesh):
+   - User selects "Managers".
+   - App filters the active peer list for Role == 'Manager'.
+   - Audio tracks are enabled only for those specific connections.
+
+C. THE "ALL-CALL":
+   - Standard broadcast to all peers in the current room.
+
+4. UI/UX IMPLEMENTATION
+-----------------------
+- Multi-Button Interface: 
+  * Large "Broadcast" button for the whole team.
+  * "Quick Toggles" for specific Roles.
+  * User list for 1-on-1 private channels.
+- Incoming Call Indicator: Shows "Private Call: [Name]" vs 
+  "Group Call" to the receiver.
+
+5. TECHNICAL ADVANTAGE
+----------------------
+- Because this is P2P (WebRTC), a "Private Call" is truly 
+  private. The audio data never touches a server, and 
+  other users in the room don't even receive the packets.
+================================================================

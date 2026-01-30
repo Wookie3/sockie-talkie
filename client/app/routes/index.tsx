@@ -20,28 +20,53 @@ function WalkieTalkie() {
   const [roomId, setRoomId] = useState('CHANNEL-A')
   const [isConnected, setIsConnected] = useState(false)
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null)
+  const [currentSpeakerUsername, setCurrentSpeakerUsername] = useState<string>('')
   const [logs, setLogs] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
   
   // NEW: Custom Channel State
   const [showCustomInput, setShowCustomInput] = useState(false)
   const [customInput, setCustomInput] = useState('')
+  
+  // NEW: Username State
+  const [username, setUsername] = useState(() => {
+    const saved = localStorage.getItem('wt-username')
+    return saved || ''
+  })
+  const [showUsernameModal, setShowUsernameModal] = useState(() => !localStorage.getItem('wt-username'))
+  
+  // NEW: Room users state
+  const [roomUsers, setRoomUsers] = useState<Map<string, string>>(new Map())
   
   // --- REFS ---
   const socketRef = useRef<Socket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const nextStartTimeRef = useRef<number>(0)
   const streamRef = useRef<MediaStream | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const processorRef = useRef<AudioWorkletNode | null>(null)
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const gainNodeRef = useRef<GainNode | null>(null)
   const activeRoomRef = useRef<string | null>(null)
+  const workletInitializedRef = useRef<boolean>(false)
   
   // NEW: Ref to store the incoming speaker's rate
-  const speakerSampleRateRef = useRef<number>(16000) 
+  const speakerSampleRateRef = useRef<number>(16000)
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([])
 
   // --- LOGGING ---
   const addLog = (msg: string) => {
     setLogs(prev => [msg, ...prev].slice(0, 5))
+  }
+
+  // --- USERNAME HANDLING ---
+  const handleUsernameSubmit = (name: string) => {
+    const trimmed = name.trim()
+    if (trimmed) {
+      setUsername(trimmed)
+      localStorage.setItem('wt-username', trimmed)
+      setShowUsernameModal(false)
+      addLog(`ID: ${trimmed}`)
+    }
   }
 
   // --- INITIALIZATION ---
@@ -58,23 +83,53 @@ function WalkieTalkie() {
     gainNode.connect(ctx.destination)
     gainNodeRef.current = gainNode
 
-    // 2. Initialize Socket
+    // 2. Initialize Socket with reconnection options
     const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:3001`
     
-    socketRef.current = io(serverUrl)
+    socketRef.current = io(serverUrl, {
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000
+    })
 
     const socket = socketRef.current
 
     socket.on('connect', () => {
       setIsConnected(true)
       addLog('Connected to freq.')
-      // joinRoom call removed from here, handled by dependency effect
+      // Send username to server
+      if (username) {
+        socket.emit('set-username', username)
+      }
+      // Auto-rejoin current room if we have one
+      if (activeRoomRef.current) {
+        socket.emit('join-room', activeRoomRef.current, username)
+        addLog(`Rejoined ${activeRoomRef.current}`)
+      }
     })
 
     socket.on('disconnect', () => {
       setIsConnected(false)
       addLog('Signal lost.')
       setStatus('IDLE')
+      setRoomUsers(new Map())
+      setError('Disconnected')
+    })
+
+    socket.io.on('reconnect_attempt', () => {
+      addLog('Reconnecting...')
+    })
+
+    socket.io.on('reconnect_failed', () => {
+      addLog('Reconnect failed')
+      setError('Connection failed')
+    })
+
+    socket.io.on('error', (err: Error) => {
+      console.error('Socket error:', err)
+      addLog('Socket error')
     })
 
     socket.on('room-state', (state: RoomState) => {
@@ -92,15 +147,16 @@ function WalkieTalkie() {
       }
     })
 
-    socket.on('talk-started', ({ userId, sampleRate }: { userId: string, sampleRate?: number }) => {
+    socket.on('talk-started', ({ userId, username, sampleRate }: { userId: string, username?: string, sampleRate?: number }) => {
       if (userId === socket.id) {
         setStatus('TRANSMITTING')
         startRecording()
       } else {
         setStatus('RECEIVING')
         setCurrentSpeaker(userId)
+        setCurrentSpeakerUsername(username || 'Unknown')
         
-        // NEW: Update sample rate for playback
+        // Update sample rate for playback
         if (sampleRate) speakerSampleRateRef.current = sampleRate
 
         // Ensure playback context is running
@@ -110,18 +166,33 @@ function WalkieTalkie() {
       }
     })
 
-    socket.on('talk-stopped', ({ userId }: { userId: string }) => {
+    socket.on('talk-stopped', ({ userId, username }: { userId: string, username?: string }) => {
       if (userId === socket.id) {
         setStatus('IDLE')
         stopRecording()
       } else {
         setStatus('IDLE')
         setCurrentSpeaker(null)
+        setCurrentSpeakerUsername('')
         // Reset timing for next burst
         if (audioContextRef.current) {
              nextStartTimeRef.current = audioContextRef.current.currentTime
         }
       }
+    })
+
+    socket.on('user-joined', ({ socketId, username }: { socketId: string, username: string }) => {
+      addLog(`${username} joined`)
+      setRoomUsers(prev => new Map(prev).set(socketId, username))
+    })
+
+    socket.on('user-left', ({ socketId, username }: { socketId: string, username: string }) => {
+      addLog(`${username} left`)
+      setRoomUsers(prev => {
+        const newMap = new Map(prev)
+        newMap.delete(socketId)
+        return newMap
+      })
     })
 
     socket.on('voice-chunk', async ({ chunk }: { chunk: ArrayBuffer; userId: string }) => {
@@ -131,23 +202,51 @@ function WalkieTalkie() {
     return () => {
       socket.disconnect()
       stopRecording()
+      // Clean up all active audio sources
+      activeSourcesRef.current.forEach(source => {
+        try {
+          source.stop()
+          source.disconnect()
+        } catch (e) {}
+      })
+      activeSourcesRef.current = []
+      // Close audio context
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+      }
     }
-  }, []) // Run once
+  }, [])
 
-  // Re-join when room ID changes
+  // Watch for username changes and update server
   useEffect(() => {
-    if (socketRef.current && isConnected) {
-        const prevRoom = activeRoomRef.current
-        if (prevRoom && prevRoom !== roomId) {
-            socketRef.current.emit('leave-room', prevRoom)
-        }
-        
-        socketRef.current.emit('join-room', roomId)
-        activeRoomRef.current = roomId
-        addLog(`Joined ${roomId}`)
+    if (socketRef.current?.connected && username) {
+      socketRef.current.emit('set-username', username)
+      addLog(`ID: ${username}`)
     }
-  }, [roomId, isConnected])
+  }, [username])
 
+  const joinRoom = (newRoomId: string) => {
+    if (!socketRef.current || !isConnected) return
+    
+    const prevRoom = activeRoomRef.current
+    if (prevRoom && prevRoom !== newRoomId) {
+      socketRef.current.emit('leave-room', prevRoom)
+    }
+    
+    // Clear previous room users
+    setRoomUsers(new Map())
+    
+    socketRef.current.emit('join-room', newRoomId, username)
+    activeRoomRef.current = newRoomId
+    addLog(`Joined ${newRoomId}`)
+  }
+
+  // Handle room changes explicitly when socket is connected
+  useEffect(() => {
+    if (isConnected && roomId) {
+      joinRoom(roomId)
+    }
+  }, [isConnected])
 
   // --- AUDIO INPUT (Microphone - RAW PCM) ---
   const startRecording = async () => {
@@ -156,6 +255,12 @@ function WalkieTalkie() {
 
     try {
         await ctx.resume()
+        
+        // Load worklet module (only once)
+        if (!workletInitializedRef.current) {
+            await ctx.audioWorklet.addModule('/worklets/audio-processor.js')
+            workletInitializedRef.current = true
+        }
         
         // Get Mic - Request 16kHz to match context
         const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -172,31 +277,42 @@ function WalkieTalkie() {
         const source = ctx.createMediaStreamSource(stream)
         sourceRef.current = source
 
-        // Create Processor (BufferSize 2048 at 16k is ~128ms latency)
-        // 4096 at 16k is ~256ms (too much lag)
-        const processor = ctx.createScriptProcessor(2048, 1, 1)
+        // Create AudioWorkletNode
+        const processor = new AudioWorkletNode(ctx, 'audio-processor')
         processorRef.current = processor
 
-        processor.onaudioprocess = (e) => {
-            if (!socketRef.current) return
+        // Handle messages from worklet
+        processor.port.onmessage = (event) => {
+            if (!socketRef.current || event.data.type !== 'audioData') return
             
-            // Fix: Use ref to get current room ID, avoiding stale closures
             const currentRoom = activeRoomRef.current || roomId
-            
-            const inputData = e.inputBuffer.getChannelData(0)
             
             socketRef.current.emit('voice-chunk', { 
                 roomId: currentRoom, 
-                chunk: inputData.buffer 
+                chunk: event.data.buffer 
             })
         }
 
         source.connect(processor)
         processor.connect(ctx.destination) 
+        setError(null)
+        addLog('Mic active')
 
     } catch (err) {
         console.error('Mic Error', err)
-        addLog('Mic Error!')
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+        let userMessage = 'Mic Error'
+        
+        if (errorMsg.includes('Permission denied') || errorMsg.includes('NotAllowedError')) {
+            userMessage = 'Mic permission denied'
+        } else if (errorMsg.includes('NotFoundError') || errorMsg.includes('not found')) {
+            userMessage = 'No mic detected'
+        } else if (errorMsg.includes('NotReadableError')) {
+            userMessage = 'Mic in use'
+        }
+        
+        setError(userMessage)
+        addLog(userMessage)
     }
   }
 
@@ -220,10 +336,13 @@ function WalkieTalkie() {
     const ctx = audioContextRef.current
     if (!ctx) return
 
+    // Ensure audio context is running
+    if (ctx.state === 'suspended') {
+      ctx.resume()
+    }
+
     const float32Data = new Float32Array(arrayBuffer)
     
-    // NEW: Use the SENDER'S sample rate, not the receiver's context rate
-    // This fixes the pitch/speed mismatch
     const playbackRate = speakerSampleRateRef.current || 16000
     
     const audioBuffer = ctx.createBuffer(1, float32Data.length, playbackRate)
@@ -239,10 +358,22 @@ function WalkieTalkie() {
         source.connect(ctx.destination)
     }
 
+    // Track this source for cleanup
+    activeSourcesRef.current.push(source)
+
+    // Remove from tracking after playback completes
+    source.onended = () => {
+      const index = activeSourcesRef.current.indexOf(source)
+      if (index > -1) {
+        activeSourcesRef.current.splice(index, 1)
+      }
+      source.disconnect()
+    }
+
     // Jitter Buffer Logic
     const now = ctx.currentTime
     
-    // NEW: Improved drift correction
+    // Improved drift correction
     // If we are too far behind (> 0.3s), jump ahead to avoid "lag buildup"
     if (nextStartTimeRef.current < now || nextStartTimeRef.current > now + 0.3) {
         nextStartTimeRef.current = now + 0.05 // Reset buffer to 50ms
@@ -284,7 +415,7 @@ function WalkieTalkie() {
   const getStatusText = () => {
      switch (status) {
         case 'TRANSMITTING': return 'TRANSMITTING...'
-        case 'RECEIVING': return `INCOMING: ${currentSpeaker?.slice(0,4)}...`
+        case 'RECEIVING': return `INCOMING: ${currentSpeakerUsername?.slice(0,12) || 'Unknown'}`
         case 'BUSY': return 'CHANNEL BUSY'
         default: return 'READY TO TRANSMIT'
      }
@@ -295,6 +426,11 @@ function WalkieTalkie() {
     if (audioContextRef.current?.state === 'suspended') {
         audioContextRef.current.resume()
     }
+  }
+
+  // Clear error state
+  const clearError = () => {
+    setError(null)
   }
 
   return (
@@ -328,13 +464,40 @@ function WalkieTalkie() {
                     <span className="text-xs font-bold">CH: {roomId.toUpperCase()}</span>
                     <span className="text-xs">{isConnected ? 'ON' : 'OFF'}</span>
                 </div>
-                <div className="text-center font-bold text-lg animate-pulse-fast">
-                    {getStatusText()}
+                <div 
+                    onClick={error ? clearError : undefined}
+                    className={`text-center font-bold text-lg cursor-pointer ${error ? 'text-red-700' : 'animate-pulse-fast'}`}
+                    title={error ? "Click to dismiss" : ""}
+                >
+                    {error || getStatusText()}
                 </div>
                 <div className="mt-2 text-[10px] h-8 overflow-hidden opacity-70">
                     {logs.map((l, i) => <div key={i}>{'> ' + l}</div>)}
                 </div>
             </div>
+
+            {/* ROOM ROSTER */}
+            {roomUsers.size > 0 && (
+                <div className="bg-zinc-900/50 rounded-lg p-2 mb-4">
+                    <div className="text-[10px] text-zinc-500 mb-1 font-bold uppercase tracking-wider">
+                        CHANNEL USERS ({roomUsers.size})
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                        {Array.from(roomUsers.entries()).map(([socketId, userName]) => (
+                            <div 
+                                key={socketId}
+                                className={`px-2 py-1 rounded text-[10px] font-mono ${
+                                    currentSpeaker === socketId 
+                                        ? 'bg-wt-accent text-zinc-900 font-bold' 
+                                        : 'bg-zinc-700 text-zinc-300'
+                                }`}
+                            >
+                                {userName}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* CONTROLS */}
             <div className="flex flex-col gap-4">
@@ -343,8 +506,12 @@ function WalkieTalkie() {
                         <button
                             key={ch}
                             onClick={() => {
-                                setRoomId(`CHANNEL-${ch}`)
+                                const newRoom = `CHANNEL-${ch}`
+                                setRoomId(newRoom)
                                 setShowCustomInput(false)
+                                if (isConnected) {
+                                    joinRoom(newRoom)
+                                }
                             }}
                             className={`
                                 flex-1 py-3 rounded-md font-bold text-lg transition-all
@@ -393,18 +560,26 @@ function WalkieTalkie() {
                             onKeyDown={(e) => {
                                 if (e.key === 'Enter' && customInput.trim()) {
                                     setRoomId(customInput.trim())
+                                    if (isConnected) {
+                                        joinRoom(customInput.trim())
+                                    }
                                 }
                             }}
                             autoFocus
                         />
-                        <button 
-                            onClick={() => {
-                                if (customInput.trim()) setRoomId(customInput.trim())
-                            }}
-                            className="bg-wt-accent px-4 rounded text-zinc-900 font-bold text-xs hover:brightness-110 active:scale-95 transition-all"
-                        >
-                            SET
-                        </button>
+                         <button 
+                             onClick={() => {
+                                 if (customInput.trim()) {
+                                     setRoomId(customInput.trim())
+                                     if (isConnected) {
+                                         joinRoom(customInput.trim())
+                                     }
+                                 }
+                             }}
+                             className="bg-wt-accent px-4 rounded text-zinc-900 font-bold text-xs hover:brightness-110 active:scale-95 transition-all"
+                         >
+                             SET
+                         </button>
                     </div>
                 )}
              </div>
@@ -415,6 +590,39 @@ function WalkieTalkie() {
             SOCKIE-TALKIE MODEL-T1000<br/>
             PRESS AND HOLD TO TRANSMIT
         </div>
+        
+        {/* USERNAME MODAL */}
+        {showUsernameModal && (
+            <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+                <div className="bg-zinc-800 rounded-2xl p-8 max-w-md w-full border-4 border-zinc-700 shadow-2xl">
+                    <h2 className="text-2xl font-bold text-center text-wt-accent mb-2">IDENTIFY YOURSELF</h2>
+                    <p className="text-center text-zinc-400 mb-6 text-sm">Choose your callsign for communication</p>
+                    
+                    <input 
+                        type="text" 
+                        className="w-full bg-zinc-900 border-2 border-zinc-600 rounded-lg px-4 py-3 text-lg text-white placeholder-zinc-500 focus:outline-none focus:border-wt-accent focus:ring-2 focus:ring-wt-accent transition-all mb-4"
+                        placeholder="ENTER CALLSIGN..."
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value.toUpperCase())}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && username.trim()) {
+                                handleUsernameSubmit(username)
+                            }
+                        }}
+                        autoFocus
+                        maxLength={15}
+                    />
+                    
+                    <button 
+                        onClick={() => handleUsernameSubmit(username)}
+                        disabled={!username.trim()}
+                        className="w-full bg-wt-accent text-zinc-900 font-bold text-xl py-3 rounded-lg hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all"
+                    >
+                        SET CALLSIGN
+                    </button>
+                </div>
+            </div>
+        )}
     </div>
   )
 }
