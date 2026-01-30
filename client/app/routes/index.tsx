@@ -336,6 +336,11 @@ function WalkieTalkie() {
     const ctx = audioContextRef.current
     if (!ctx) return
 
+    // Ensure audio context is running
+    if (ctx.state === 'suspended') {
+      ctx.resume()
+    }
+
     const float32Data = new Float32Array(arrayBuffer)
     
     const playbackRate = speakerSampleRateRef.current || 16000
