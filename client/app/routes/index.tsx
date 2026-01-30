@@ -105,7 +105,7 @@ function WalkieTalkie() {
       }
       // Auto-rejoin current room if we have one
       if (activeRoomRef.current) {
-        socket.emit('join-room', activeRoomRef.current)
+        socket.emit('join-room', activeRoomRef.current, username)
         addLog(`Rejoined ${activeRoomRef.current}`)
       }
     })
@@ -216,6 +216,14 @@ function WalkieTalkie() {
       }
     }
   }, [])
+
+  // Watch for username changes and update server
+  useEffect(() => {
+    if (socketRef.current?.connected && username) {
+      socketRef.current.emit('set-username', username)
+      addLog(`ID: ${username}`)
+    }
+  }, [username])
 
   const joinRoom = (newRoomId: string) => {
     if (!socketRef.current || !isConnected) return
