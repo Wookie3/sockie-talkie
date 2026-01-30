@@ -61,15 +61,6 @@ io.on('connection', (socket) => {
     });
   });
 
-    // Initialize room if not exists
-    if (!rooms[roomId]) {
-      rooms[roomId] = { currentSpeaker: null };
-    }
-
-    // Send current state to the new user
-    socket.emit('room-state', rooms[roomId]);
-  });
-
   // LEAVE ROOM
   socket.on('leave-room', (roomId) => {
     socket.leave(roomId);
@@ -157,7 +148,7 @@ io.on('connection', (socket) => {
       }
       
       // Release speaker lock
-      if (rooms[roomId].currentSpeaker === socket.id) {
+      if (rooms[roomId] && rooms[roomId].currentSpeaker === socket.id) {
         rooms[roomId].currentSpeaker = null;
         io.to(roomId).emit('talk-stopped', { 
           userId: socket.id, 
